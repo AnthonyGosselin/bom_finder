@@ -1,1 +1,2 @@
+# Instructions:
 Add all pdf files into a directory called "pdfs" in this current directory.
