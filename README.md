@@ -1,5 +1,7 @@
 # Setup
-1) Install required packages:
+1) Create virtual environment
+2) Activate virtual environment
+3) Install required packages:
 ```
 pip install requirements.txt
 ```
