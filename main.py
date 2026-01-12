@@ -14,6 +14,7 @@ from PIL import Image
 import pandas as pd
 from time import time
 from tqdm import tqdm
+import argparse
 
 # These are specfic to our BOM tables and to default resolution
 NEW_LINE_THRESH = 37
@@ -41,6 +42,7 @@ def parse_bom(table_image):
     results = ocr.predict(table_image)
     
     qty_left, qty_right = None, None
+    nd_left, nd_right = None, None
     desc_left, desc_right = None, None
 
     output = []
@@ -54,6 +56,7 @@ def parse_bom(table_image):
         # res.print()
         bom_title_found = False
         desc_found = False
+        nd_found = False
         qty_found = False
         for i, text in enumerate(res["rec_texts"]):
             coords = res["rec_boxes"][i].tolist()
@@ -69,6 +72,12 @@ def parse_bom(table_image):
                     qty_found = True
                     # qty_crop = Image.fromarray(table_image[:, qty_left:qty_right, :], "RGB")
                     # qty_crop.save("qty_crop.png")
+                elif text == "ND":
+                    nd_left = coords[0] - 60
+                    nd_right = coords[2] + 60
+                    nd_found = True
+                    # nd_crop = Image.fromarray(table_image[:, nd_left:nd_right, :], "RGB")
+                    # nd_crop.save("nd_crop.png")
                 elif text == "DESCRIPTION":
                     desc_left = coords[0] - 230
                     desc_right = coords[2] + 230
@@ -76,19 +85,23 @@ def parse_bom(table_image):
                     # desc_crop = Image.fromarray(table_image[:, desc_left:desc_right, :], "RGB")
                     # desc_crop.save("desc_crop.png")
             
-            if qty_found and desc_found:
+            if qty_found and desc_found and nd_found:
                 if current_row_idx is None:
                     current_y = coords[3]
                     current_row_idx = 0
-                    output.append({"QTY": None, "DESC": ""})
+                    output.append({"QTY": None, "ND": "", "DESC": ""})
                 elif (coords[3] - current_y) > NEW_LINE_THRESH:
                     # We have hit a new row
                     current_row_idx += 1
-                    output.append({"QTY": None, "DESC": ""})
+                    output.append({"QTY": None, "ND": "", "DESC": ""})
 
                 if is_between(coords, qty_left, qty_right):
                     # Found QTY entry
                     output[current_row_idx]["QTY"] = float(text.replace("M", ""))
+                    current_y = coords[3]
+                elif is_between(coords, nd_left, nd_right):
+                    # Found one (of possibly many) ND entries, accumulate
+                    output[current_row_idx]["ND"] += text # Accumulate entries
                     current_y = coords[3]
                 elif is_between(coords, desc_left, desc_right):
                     # Found one (of possibly many) DESC entries, accumulate
@@ -99,12 +112,28 @@ def parse_bom(table_image):
     # Clean up any entries that have missing QTY
     cleaned_output = [dic for dic in output if dic["QTY"] is not None and dic["DESC"] != ""]
 
-    # # Also remove all spaces from DESC to facilitate matches
-    # for dic in output:
-    #     dic["DESC"] = dic["DESC"].replace(" ", "")
+    # Fix common OCR reading mistakes for "ND" column
+    for dic in cleaned_output:
+        new_string = dic["ND"].replace("{", '″').replace("X", "x").replace('\"', "″").replace('”', "″").replace("$", "").replace("^", "").replace("\\", "").strip()
+        if not new_string.endswith("″"):
+            new_string += "″"
+        dic["ND"] = new_string
 
     return cleaned_output
 
+
+# START PROGRAM:
+# pdf_directory = "test"
+# output_dir = "test_csv_out"
+
+parser = argparse.ArgumentParser()
+parser.add_argument("pdf_directory", default="./pdfs")
+args = parser.parse_args()
+pdf_directory = args.pdf_directory
+output_dir = "./csv"
+if pdf_directory is not None and pdf_directory != "":
+    print(f"Processing pdfs contained in directory: {pdf_directory}")
+    output_dir = f"{pdf_directory}_csv_out"
 
 start_time = time()
 # Initialize OCR for detection only (faster)
@@ -120,11 +149,11 @@ filename2 = '60-PO-4233_00.pdf'
 select_files = None # [filename2]
 
 global_output = []
-os.makedirs("csv", exist_ok=True)
+os.makedirs(output_dir, exist_ok=True)
 file_count = 0
-for filename in select_files or tqdm(os.listdir("./pdfs")):
+for filename in select_files or tqdm(os.listdir(pdf_directory)):
     file_count += 1
-    file_path = f"./pdfs/{filename}"
+    file_path = f"{pdf_directory}/{filename}"
 
     table_crops = load_pdf(file_path)
     file_output = []
@@ -139,7 +168,7 @@ for filename in select_files or tqdm(os.listdir("./pdfs")):
         
     df = pd.DataFrame(file_output)
     df.index = df.index + 1
-    df.to_csv(f"./csv/{filename.replace(".pdf", "")}_BOM.csv")
+    df.to_csv(f"{output_dir}/{filename.replace(".pdf", "")}_BOM.csv")
 
     global_output.extend(file_output)
 
@@ -156,10 +185,10 @@ for dic in global_output:
         no_whitespace_lookup[no_spaces] = dic["DESC"]
 
 df = pd.DataFrame(global_output)
-df.to_csv(f"./csv/Global_BOM_raw.csv", index = False)
+df.to_csv(f"{output_dir}/Global_BOM_raw.csv", index = False)
 
-total_df = df.groupby('DESC', as_index=False)['QTY'].sum()
-total_df.to_csv(f"./csv/Global_BOM_totals.csv", index=False)
+total_df = df.groupby(['DESC', 'ND'], as_index=False)['QTY'].sum()
+total_df.to_csv(f"{output_dir}/Global_BOM_totals.csv", index=False, columns=["QTY", "ND", "DESC"])
 
 print(f"DONE {file_count} files in {time()-start_time:.4f}s")
 
@@ -170,8 +199,9 @@ print(f"DONE {file_count} files in {time()-start_time:.4f}s")
 # We feed the right table to the OCR
 # If BOM keyword is detected, we flag that we should repeat next steps for left table too
 #   Locate x min&max for QTY column
+#   Locate x min&max for ND column
 #   Locate x min&max for DESC column
-#   Search for next entry that fits in either QTY or DESC columns
-#       If found, search for *all* next entries that fits in DESC col and match together (can be done for ND too) if QTY col, just search for one entry
+#   Search for next entry that fits in either QTY, ND, or DESC columns
+#       If found, search for *all* next entries that fits in DESC col and match together (for ND too) if QTY col, just search for one entry
 #           But we also need to check y dist, only allow words that count as second input line (same block), but not new row
-# Convert QTY:DESC dict to csv
+# Convert resluting dict to csv
