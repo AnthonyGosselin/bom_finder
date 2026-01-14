@@ -114,7 +114,7 @@ def parse_bom(table_image):
 
     # Fix common OCR reading mistakes for "ND" column
     for dic in cleaned_output:
-        new_string = dic["ND"].replace("{", '″').replace("X", "x").replace('\"', "″").replace('”', "″").replace("$", "").replace("^", "").replace("\\", "").strip()
+        new_string = dic["ND"].replace("{", '\"').replace("X", "x").replace('”', "\"").replace("$", "").replace("^", "").replace("\\", "").strip()
         if not new_string.endswith("″"):
             new_string += "″"
         dic["ND"] = new_string
